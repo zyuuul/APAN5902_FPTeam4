@@ -1,0 +1,377 @@
+---
+title: "Vehicle Collision Reporting Engine"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(formulaic)
+library(rmarkdown)
+library(knitr)
+library(Hmisc)
+library(DT)
+library(data.table)
+library(MASS)
+library(this.path)
+library(readr)
+library(tidyverse)
+library(DBI)
+library(formulaic)
+library(ggplot2)
+library(lubridate)
+
+assignInNamespace(x = "cedta.override", value = c(data.table:::cedta.override,"rmarkdown"), ns = "data.table")
+
+opts_chunk$set(echo = FALSE, comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=55), tidy = TRUE)
+
+```
+
+```{r source_functions}
+source("constants.R")
+source("functions.R")
+```
+
+```{r constants}
+cid.name = "COLLISION_ID"
+pid.name = "UNIQUE_ID"
+vid.name = "UNIQUE_ID"
+```
+
+```{r read_data}
+crash = fread('Motor_Vehicle_Collisions_-_Crashes_20231117.csv')
+person = fread('Motor_Vehicle_Collisions_-_Person_20231117.csv')
+vehicle = fread('Motor_Vehicle_Collisions_-_Vehicles_20231117.csv')
+```
+
+
+```{r derived_variables}
+# Define age groups
+person[, AgeGroup := cut(PERSON_AGE, breaks = c(0, 16, 34, 49, 64, Inf), 
+                                     labels = c("0-16", "16-34", "35-49", "50-64", "65+"), 
+                                     right = FALSE)]
+
+
+
+unique.borough = unique(crash$BOROUGH)
+unique.borough = unique.borough[unique.borough != ""]
+
+unique.genders = unique(person$PERSON_SEX)
+unique.genders = unique.genders[unique.genders != "" & unique.genders != "U"]
+
+unique.age.groups = unique(person$AgeGroup)
+unique.position.incar = c("Driver", "Front Passenger", "Middle Rear Seat", "Middle Front Seat", "Left Rear Passenger", "Right Rear Passenger", "Riding/Hanging on Outside", "Rear of Vehicle", "If one person is seated on another person&apos;s lap")
+```
+
+Introduction
+=====================================  
+
+We are analyzing data from NYPD's collection on records of motor vehicle collisions and crashes spanning from 2014 to 2023.
+
+There are total of:
+
+* **Number of Crashes**:  `r crash[,.N]`
+
+* **Number of Victim Involved**:  `r person[,.N]`
+
+* **Number of cars involved**:  `r vehicle[,.N]`
+
+Click on the tabs to see different reports.
+
+
+
+
+Question 1
+===================================
+
+Does the position in the vehicle affect the level of injury(Bodily_Injury)?
+
+Row {data-height=500}
+-------------------------------------
+
+```{r q1_input}
+inputPanel(
+  # Add UI elements for demographic variables selection
+  selectInput(inputId = "q1_Borough", label = "Select Borough", choices = unique.borough, selected = "BROOKLYN"),
+  checkboxGroupInput(inputId = "q1_position", label = "Select Position", choices = unique.position.incar, selected = unique.position.incar),
+  checkboxInput(inputId = "q1_generate.report", label = "Generate HTML Report", value = FALSE)
+)
+
+# input <- list(
+#   q1_Borough = "BRONX",
+#   q1_position = c("Driver","Front Passenger"),
+#   q1_generate.report = FALSE
+# )
+```
+
+```{r q1_output}
+renderDataTable({
+  #filter dataset
+  q1_crash = crash[BOROUGH == input$q1_Borough]
+  q1_person = person[COLLISION_ID %in% q1_crash$COLLISION_ID]
+  q1_vehicle = vehicle[COLLISION_ID %in% q1_crash$COLLISION_ID]
+  person_tuned_injury = q1_person
+  
+  #prepare for position vs injury regression
+  # Define the mapping rules
+  simplified_positions <- list(
+    "Unknown Position" = c("", "Unknown"),
+    "Driver" = "Driver",
+    "Front Passenger" = "Front passenger, if two or more persons, including the driver, are in the front seat",
+    "Middle Rear Seat" = "Middle rear seat, or passenger lying across a seat",
+    "Middle Front Seat" = "Middle front seat, or passenger lying across a seat",
+    "Left Rear Passenger" = "Left rear passenger, or rear passenger on a bicycle, motorcycle, snowmobile",
+    "Right Rear Passenger" = "Right rear passenger or motorcycle sidecar passenger",
+    "Riding/Hanging on Outside" = "Riding/Hanging on Outside",
+    "Rear of Vehicle" = "Any person in the rear of a station wagon, pick-up truck, all passengers on a bus, etc",
+    "Passenger seated on another person's lap" = "If one person is seated on another person's lap"
+  )
+  # Apply the mapping to create a new column
+  person_tuned_injury[, Simplified_Position := POSITION_IN_VEHICLE]
+  for (simple in names(simplified_positions)) {
+    detailed <- simplified_positions[[simple]]
+    person_tuned_injury[POSITION_IN_VEHICLE %in% detailed, Simplified_Position := simple]
+  }
+  #Assign initial scale based on BODILY_INJURY
+  person_tuned_injury[, Injury_Scale := fifelse(BODILY_INJURY %in% c("", "Does Not Apply", "Unknown"), 0,
+                                   fifelse(BODILY_INJURY == "Entire Body", 2, 1))]
+  #Adjust the scale if PERSON_INJURY is "Killed"
+  person_tuned_injury[PERSON_INJURY == "Killed", Injury_Scale := 3]
+  # Convert Injury_Scale to an ordered factor
+  person_tuned_injury[, Injury_Scale := factor(Injury_Scale, levels = 0:3, ordered = TRUE)]
+  # Convert POSITION_IN_VEHICLE to a factor if it's not already
+  person_tuned_injury[, Simplified_Position := as.factor(Simplified_Position)]
+  # Check original levels
+  original_levels <- levels(person_tuned_injury$Simplified_Position)
+  # Reorder the levels
+  person_tuned_injury[, Simplified_Position := factor(Simplified_Position, 
+                                                      levels = c("Unknown Position", original_levels[original_levels != "Unknown Position"]))]
+  
+  
+  # Create the ordinal logistic regression model
+  model <- polr(Injury_Scale ~ Simplified_Position, data = person_tuned_injury, Hess = TRUE)
+  result_table = extract_ordinal_regression_results(model)
+  
+  result_table$Variable <- gsub("Simplified_Position", "", result_table$Variable)
+  filtered_result <- result_table[result_table$Variable %in% input$q1_position, ]
+  
+  #generate report if chosen
+  if(input$q1_generate.report == TRUE){
+    dir.create(path = "shiny_report", showWarnings = F, recursive = T)
+    params <- list(p_model = model, p_table = result_table, crash = q1_crash, person = q1_person, vehicle = q1_vehicle, borough = input$q1_Borough)
+    render(input = "Q1_Report.Rmd", output_file = sprintf("shiny_report/q1_report_%s.html", input$q1_Borough), params = params)
+  }
+  
+  
+  datatable(data = filtered_result, rownames = FALSE)
+})
+```
+
+
+
+
+
+Question 2
+=====================================  
+
+Does the types of vehicles affect severity level of crashes?
+
+Row {data-height=500}
+-------------------------------------
+
+```{r q2_input}
+inputPanel(
+  # Add UI elements for demographic variables selection
+  selectInput(inputId = "q2_Borough", label = "Select Borough", choices = unique.borough, selected = "BROOKLYN"),
+  checkboxInput(inputId = "q2_generate.report", label = "Generate HTML Report", value = FALSE),
+  sliderInput(inputId = "q2_multiplier_factor", label = "Multiplier Factor", min = 5, max = 20, value = 10, step = 5),
+)
+
+# input <- list(
+#   q2_Borough = "BRONX",
+#   q2_generate.report = FALSE,
+#   q2_multiplier_factor = 10
+# )
+```
+
+```{r q2_output}
+renderDataTable({
+  #filter dataset
+  q2_crash = crash[BOROUGH == input$q2_Borough]
+  q2_person = person[COLLISION_ID %in% q2_crash$COLLISION_ID]
+  q2_vehicle = vehicle[COLLISION_ID %in% q2_crash$COLLISION_ID]
+  
+  
+  #calculation
+  multiplier_factor = input$q2_multiplier_factor
+
+  
+  #Severity Scoring
+  q2_crash$SeverityScore <- q2_crash$`NUMBER OF PERSONS INJURED` + multiplier_factor * q2_crash$`NUMBER OF PERSONS KILLED`
+  
+  # Extracting vehicle type columns
+  vehicle_type_columns <- c("VEHICLE TYPE CODE 1", "VEHICLE TYPE CODE 2", "VEHICLE TYPE CODE 3", "VEHICLE TYPE CODE 4", "VEHICLE TYPE CODE 5")
+  
+  df <- as.data.frame(q2_crash)
+  
+  #Convert to data frame for data manipulation
+  df_long <- df %>%
+    select(all_of(vehicle_type_columns), 'COLLISION_ID', `NUMBER OF PERSONS INJURED`, `NUMBER OF PERSONS KILLED`, SeverityScore) %>%
+    pivot_longer(cols = starts_with("VEHICLE TYPE CODE"), names_to = "Vehicle_Type_Column", values_to = "Vehicle_Type")
+  
+  dt_long <- as.data.table(df_long)
+  dt_long <- dt_long[Vehicle_Type != '']
+  dt_long <- dt_long[complete.cases(dt_long[, .(SeverityScore)]), ]
+  
+  #Create table to track each vehicle type
+  unique_vehicle_types <- unique(dt_long$Vehicle_Type)
+  
+  vehicle_type_counts <- table(dt_long$Vehicle_Type)
+  unique_vehicle_types2 <- data.table(
+    Vehicle_Type = names(vehicle_type_counts),
+    Count = as.integer(vehicle_type_counts)
+  )
+  
+  #Calculate severity score by vehicle
+  severity_by_vehicle <- dt_long[, .(Mean_SeverityScore = mean(SeverityScore)), by = Vehicle_Type]
+  vehicle_types_summary = merge(unique_vehicle_types2, severity_by_vehicle, by = "Vehicle_Type", all.x = TRUE, all.y = TRUE)
+  
+  #Calculate Popularity Factor for each type of vehicle
+  vehicle_types_summary[, Popularity_Factor := 1 / (Count / sum(Count)), by = NULL]
+  
+  #Normalize Severity Scores for final output
+  q2_table = datatable(vehicle_types_summary[, Normalized_SeverityScore := Mean_SeverityScore / Popularity_Factor][order(-Count)])
+  
+  #generate report if chosen
+  if(input$q2_generate.report == TRUE){
+    dir.create(path = "shiny_report", showWarnings = F, recursive = T)
+    params <- list(q2_multiplier_factor = input$q2_multiplier_factor, q2_table = q2_table, crash = q2_crash, person = q2_person, vehicle = q2_vehicle, borough = input$q2_Borough)
+    render(input = "Q2_Report.Rmd", output_file = sprintf("shiny_report/q2_report_%s.html", input$q2_Borough), params = params)
+  }
+  
+  q2_table
+
+})
+```
+
+
+Question 3
+=====================================  
+
+Temporal Trends in Accidents: How do accident frequencies vary over temporal factors, e.g. time of day, day of the week, month, to uncover trends and potential correlations?
+
+Row {data-height=500}
+-------------------------------------
+
+```{r q3_input}
+inputPanel(
+  # Add UI elements for demographic variables selection
+  selectInput(inputId = "q3_Borough", label = "Select Borough", choices = unique.borough, selected = "BROOKLYN"),
+  checkboxInput(inputId = "q3_generate.report", label = "Generate HTML Report", value = FALSE),
+  selectInput(inputId = "q3_select_plot", label = "Select a Plot", choices = c("Accidents by Day of Week", "Accidents by Month", "Accidents by Hour"), selected = "Accidents by Day of Week"),
+)
+
+# input <- list(
+#   q3_Borough = "BRONX",
+#   q3_generate.report = FALSE,
+#   q3_select_plot = "Accidents by Day of Week"
+# )
+```
+
+```{r q3_output}
+renderPlot({
+  #filter dataset
+  q3_crash = crash[BOROUGH == input$q3_Borough]
+  q3_person = person[COLLISION_ID %in% q3_crash$COLLISION_ID]
+  q3_vehicle = vehicle[COLLISION_ID %in% q3_crash$COLLISION_ID]
+  
+  # Replace blank space with NA
+  q3_crash[BOROUGH == '', BOROUGH := NA]
+  
+  # Remove NAs in the BOROUGH column
+  q3_crash <- q3_crash[!is.na(BOROUGH)]
+  
+  q3_crash[, date_time := as.POSIXct(paste(get('CRASH DATE'), get('CRASH TIME')), format="%m/%d/%Y %H:%M")]
+  q3_crash[, `:=`(day_of_week = wday(date_time, label = TRUE),
+                  month = month(date_time, label = TRUE),
+                  hour = hour(date_time))]
+  
+  # Plotting code
+  q3_plot1 = ggplot(q3_crash) + 
+      geom_bar(aes(x = day_of_week), fill = "blue") + 
+      labs(title = "Accidents by Day of Week", x = "Day of Week", y = "Number of Accidents")
+  
+  q3_plot2 = ggplot(q3_crash) + 
+      geom_bar(aes(x = month), fill = "green") + 
+      labs(title = "Accidents by Month", x = "Month", y = "Number of Accidents")
+  
+  q3_plot3 = ggplot(q3_crash) + 
+      geom_bar(aes(x = hour), fill = "red") + 
+      labs(title = "Accidents by Hour", x = "Hour of Day", y = "Number of Accidents")
+  
+  #generate report if chosen
+  if(input$q3_generate.report == TRUE){
+    dir.create(path = "shiny_report", showWarnings = F, recursive = T)
+    params <- list(q3_plot1 = q3_plot1, q3_plot2 = q3_plot2, q3_plot3 = q3_plot3, crash = q3_crash, person = q3_person, vehicle = q3_vehicle, borough = input$q3_Borough)
+    render(input = "Q3_Report.Rmd", output_file = sprintf("shiny_report/q3_report_%s.html", input$q3_Borough), params = params)
+  }
+  
+  if(input$q3_select_plot == "Accidents by Day of Week") {
+    return(q3_plot1)
+  } else if(input$q3_select_plot == "Accidents by Month") {
+    return(q3_plot2)
+  } else if(input$q3_select_plot == "Accidents by Hour") {
+    return(q3_plot3)
+  }
+
+})
+```
+
+
+Question 4
+=====================================  
+
+How does Borough affect level of severity (number of people injured or killed)?
+
+Row {data-height=500}
+-------------------------------------
+
+```{r q4_input}
+inputPanel(
+  # Add UI elements for demographic variables selection
+  sliderInput(inputId = "q4_multiplier_factor", label = "Multiplier Factor", min = 5, max = 20, value = 10, step = 5),
+  checkboxInput(inputId = "q4_generate.report", label = "Generate HTML Report", value = FALSE)
+)
+
+# input <- list(
+#   q4_generate.report = FALSE,
+#   q4_multiplier_factor = 10
+# )
+```
+
+```{r q4_output}
+renderDataTable({
+  q4_crash = copy(crash)
+  q4_crash[BOROUGH == '', BOROUGH := NA]
+  q4_crash <- q4_crash[!is.na(BOROUGH)]
+  q4_person = person[COLLISION_ID %in% q4_crash$COLLISION_ID]
+  q4_vehicle = vehicle[COLLISION_ID %in% q4_crash$COLLISION_ID]
+  
+  q4_crash[, Severity := get("NUMBER OF PERSONS INJURED") + input$q4_multiplier_factor * get("NUMBER OF PERSONS KILLED") + get("NUMBER OF CYCLIST INJURED") + input$q4_multiplier_factor * get("NUMBER OF PERSONS KILLED") + get("NUMBER OF MOTORIST INJURED") + input$q4_multiplier_factor * get("NUMBER OF PERSONS KILLED")]
+
+  # fit a regression model between BOROUGH and SEVERITY
+  model1 <- lm(Severity ~ BOROUGH, data = q4_crash)
+  
+  if(input$q4_generate.report == TRUE){
+    dir.create(path = "shiny_report", showWarnings = F, recursive = T)
+    params <- list(model = model1, q4_multiplier_factor = input$q4_multiplier_factor, crash = q4_crash, person = q4_person, vehicle = q4_vehicle)
+    render(input = "Q4_Report.Rmd", output_file = sprintf("shiny_report/q4_report_multiplier_factor_%s.html", input$q4_multiplier_factor), params = params)
+  }
+
+  datatable(summary_model(model = model1, type = 'lm', digits = 3, alpha = 0.05))
+})
+  
+
+```
