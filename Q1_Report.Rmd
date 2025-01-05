@@ -1,0 +1,183 @@
+---
+title: "Q1 Report Card"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r libraries}
+library(data.table)
+library(DT)
+```
+
+```{r source}
+source("constants.R")
+source("functions.R")
+```
+
+
+```{r read_data}
+# #Delete: these are parameters given in report engine, will be deleted later
+# crash = fread('Real_Data/Motor_Vehicle_Collisions_-_Crashes_20231117.csv')
+# person = fread('Real_Data/Motor_Vehicle_Collisions_-_Person_20231117.csv')
+# vehicle = fread('Real_Data/Motor_Vehicle_Collisions_-_Vehicles_20231117.csv')
+# #Delete: Shorten data for EDA
+# crash = crash[1:200000,]
+# person = person[COLLISION_ID %in% crash$COLLISION_ID]
+# vehicle = vehicle[COLLISION_ID %in% crash$COLLISION_ID]
+# 
+# # Write to a CSV file
+# fwrite(crash, "Motor_Vehicle_Collisions_-_Crashes_20231117.csv")
+# fwrite(person, "Motor_Vehicle_Collisions_-_Person_20231117.csv")
+# fwrite(vehicle, "Motor_Vehicle_Collisions_-_Vehicles_20231117.csv")
+# 
+# 
+
+crash = params$crash
+person = params$person
+vehicle = params$vehicle
+```
+
+```{r derived_variables}
+```
+
+
+```{r processing}
+
+
+
+```
+
+```{r EDA}
+#seems like there are more vehicles invovled in crashes than the number of crashes
+# vehicle[,.N, by = COLLISION_ID]
+# datatable(vehicle[COLLISION_ID == 4364011])
+# datatable(crash[COLLISION_ID == 4364011])
+#seems like ther are incidents where one car hit another stationary car, and computer assigned a same collision id to them(因为vehicle table and person table 是从crash的附加项，这意味着每一次填表会得到一个collision id 这也意味着在这个事故中相撞的两个人有一个没有报警 一个报了)
+#maybe due to the fact that the MV104-AN form has a potential second car involved column
+```
+
+
+
+
+# EDA & Data Information
+
+* **Chosen Borough**: `r params$borough`
+
+* **Number of Crashes**:  `r crash[,.N]`
+
+* **Number of Victim Involved**:  `r person[,.N]`
+
+* **Number of cars involved**:  `r vehicle[,.N]`
+
+# Q1{.tabset}
+Does the position in the vehicle affect the level of injury(Bodily_Injury)?
+
+
+## Type of Casualty
+```{r position_Casualty}
+# Filter to include only injured or killed individuals
+person_tuned_position = copy(person)
+
+
+driver = "Driver"
+front =  c("Front passenger, if two or more persons, including the driver, are in the front seat","Middle front seat, or passenger lying across a seat")
+rear = c("Middle rear seat, or passenger lying across a seat", "Left rear passenger, or rear passenger on a bicycle, motorcycle, snowmobile","Right rear passenger or motorcycle sidecar passenger")
+person_tuned_position[POSITION_IN_VEHICLE %in% driver, passenger_role := "Driver"]
+person_tuned_position[POSITION_IN_VEHICLE %in% front, passenger_role := "Front Passenger"]
+person_tuned_position[POSITION_IN_VEHICLE %in% rear, passenger_role := "Rear Passenger"]
+person_tuned_position = person_tuned_position[passenger_role %in% c("Driver", "Front Passenger", "Rear Passenger"),]
+
+
+
+# Count the number of injured or killed for each position
+count_by_position <- person_tuned_position[, .(Count = .N), by = .(passenger_role, PERSON_INJURY)]
+
+# Calculate the total number in each position
+total_by_position <- person_tuned_position[, .(Total = .N), by = .(passenger_role)]
+
+# Merge the counts with the totals
+result <- merge(count_by_position, total_by_position, by = "passenger_role")
+
+# Calculate the percentages
+result[, Percentage := (Count / Total) * 100]
+
+
+
+result[, PERSON_INJURY := factor(PERSON_INJURY, levels = c("Unspecified", "Injured", "Killed"))]
+
+# Order the table first by passenger_role and then by the ordered PERSON_INJURY
+setorder(result, passenger_role, PERSON_INJURY)
+
+# View the result
+datatable(result[PERSON_INJURY == "Injured",-c(3,4)])
+datatable(result[PERSON_INJURY == "Killed",-c(3,4)])
+
+```
+
+## Position vs Injuries
+```{r position_type_injury}
+person_tuned_injury = copy(person)
+# Define the mapping rules
+simplified_positions <- list(
+  "Unknown Position" = c("", "Unknown"),
+  "Driver" = "Driver",
+  "Front Passenger" = "Front passenger, if two or more persons, including the driver, are in the front seat",
+  "Middle Rear Seat" = "Middle rear seat, or passenger lying across a seat",
+  "Middle Front Seat" = "Middle front seat, or passenger lying across a seat",
+  "Left Rear Passenger" = "Left rear passenger, or rear passenger on a bicycle, motorcycle, snowmobile",
+  "Right Rear Passenger" = "Right rear passenger or motorcycle sidecar passenger",
+  "Riding/Hanging on Outside" = "Riding/Hanging on Outside",
+  "Rear of Vehicle" = "Any person in the rear of a station wagon, pick-up truck, all passengers on a bus, etc",
+  "Passenger seated on another person's lap" = "If one person is seated on another person's lap"
+)
+
+# Apply the mapping to create a new column
+person_tuned_injury[, Simplified_Position := POSITION_IN_VEHICLE]
+for (simple in names(simplified_positions)) {
+  detailed <- simplified_positions[[simple]]
+  person_tuned_injury[POSITION_IN_VEHICLE %in% detailed, Simplified_Position := simple]
+}
+
+
+# Step 1: Assign initial scale based on BODILY_INJURY
+person_tuned_injury[, Injury_Scale := fifelse(BODILY_INJURY %in% c("", "Does Not Apply", "Unknown"), 0,
+                                 fifelse(BODILY_INJURY == "Entire Body", 2, 1))]
+
+# Step 2: Adjust the scale if PERSON_INJURY is "Killed"
+person_tuned_injury[PERSON_INJURY == "Killed", Injury_Scale := 3]
+
+
+library(MASS)
+
+# Convert Injury_Scale to an ordered factor
+person_tuned_injury[, Injury_Scale := factor(Injury_Scale, levels = 0:3, ordered = TRUE)]
+
+# Convert POSITION_IN_VEHICLE to a factor if it's not already
+person_tuned_injury[, Simplified_Position := as.factor(Simplified_Position)]
+# Check original levels
+original_levels <- levels(person_tuned_injury$Simplified_Position)
+
+# Reorder the levels
+person_tuned_injury[, Simplified_Position := factor(Simplified_Position, 
+                                                    levels = c("Unknown Position", original_levels[original_levels != "Unknown Position"]))]
+
+
+
+# Create the ordinal logistic regression model
+model <- polr(Injury_Scale ~ Simplified_Position, data = person_tuned_injury, Hess = TRUE)
+
+# Summary of the model
+summary(model)
+```
+<br>
+
+Model Coefficients
+```{r}
+datatable(extract_ordinal_regression_results(model))
+```
+
+
+

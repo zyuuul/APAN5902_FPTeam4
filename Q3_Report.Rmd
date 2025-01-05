@@ -1,0 +1,98 @@
+---
+title: "Q3 Report Card"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r libraries}
+library(data.table)
+library(DT)
+library(tidyr)
+library(dplyr)
+```
+
+```{r source}
+source("constants.R")
+source("functions.R")
+```
+
+
+```{r read_data}
+# # #Delete: these are parameters given in report engine, will be deleted later
+# crash = fread('Real_Data/Motor_Vehicle_Collisions_-_Crashes_20231117.csv')
+# person = fread('Real_Data/Motor_Vehicle_Collisions_-_Person_20231117.csv')
+# vehicle = fread('Real_Data/Motor_Vehicle_Collisions_-_Vehicles_20231117.csv')
+# #Delete: Shorten data for EDA
+# crash = crash[1:200000,]
+# person = person[COLLISION_ID %in% crash$COLLISION_ID]
+# vehicle = vehicle[COLLISION_ID %in% crash$COLLISION_ID]
+# 
+# # Write to a CSV file
+# fwrite(crash, "Motor_Vehicle_Collisions_-_Crashes_20231117.csv")
+# fwrite(person, "Motor_Vehicle_Collisions_-_Person_20231117.csv")
+# fwrite(vehicle, "Motor_Vehicle_Collisions_-_Vehicles_20231117.csv")
+# 
+# 
+
+crash = params$crash
+person = params$person
+vehicle = params$vehicle
+```
+
+```{r derived_variables}
+```
+
+
+```{r processing}
+
+
+
+```
+
+```{r EDA}
+#seems like there are more vehicles invovled in crashes than the number of crashes
+# vehicle[,.N, by = COLLISION_ID]
+# datatable(vehicle[COLLISION_ID == 4364011])
+# datatable(crash[COLLISION_ID == 4364011])
+#seems like ther are incidents where one car hit another stationary car, and computer assigned a same collision id to them(因为vehicle table and person table 是从crash的附加项，这意味着每一次填表会得到一个collision id 这也意味着在这个事故中相撞的两个人有一个没有报警 一个报了)
+#maybe due to the fact that the MV104-AN form has a potential second car involved column
+```
+
+
+
+
+# EDA & Data Information
+
+* **Chosen Borough**: `r params$borough`
+
+* **Number of Crashes**:  `r crash[,.N]`
+
+* **Number of Victim Involved**:  `r person[,.N]`
+
+* **Number of cars involved**:  `r vehicle[,.N]`
+
+
+# Q3{.tabset}
+Temporal Trends in Accidents: How do accident frequencies vary over temporal factors, e.g. time of day, day of the week, month, to uncover trends and potential correlations?
+
+#Output
+
+Accidents by Day of Week
+```{r q3_output1}
+params$q3_plot1
+```
+
+Accidents by Month
+```{r q3_output2}
+params$q3_plot2
+```
+
+Accidents by Hour
+```{r q3_output3}
+params$q3_plot3
+```
+
+
